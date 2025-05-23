@@ -1,0 +1,10 @@
+{
+    "name": "profitcraft-backend",
+    "script": "server.js",
+    "instances": 1,
+    "exec_mode": "fork",
+    "env": {
+        "NODE_ENV": "production",
+        "NODE_VERSION": "18.18.0"
+    }
+} 
