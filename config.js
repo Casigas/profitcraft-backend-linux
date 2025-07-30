@@ -1,6 +1,6 @@
 const config = {
-    user: 'ProfitCraftUser',              // Numele login-ului creat
-    password: 'ParolaComplexa123!',       // Parola pe care ați setat-o
+    user: 'ProfitCraftUser',
+    password: 'ParolaComplexa123!',
     server: 'profitcraftserver.database.windows.net',
     database: 'ProfitCraftDB',
     options: {

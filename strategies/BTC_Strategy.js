@@ -8,22 +8,18 @@ const crypto = require('crypto');
 
 const chunkSize = 100;
 
-// Helper function to generate a Windows-safe temporary file path
 async function createTempFilePath() {
     const uniqueId = crypto.randomBytes(16).toString('hex');
     const timestamp = Date.now();
     const fileName = `btc_chunk_${uniqueId}_${timestamp}.json`;
-    // Ensure Windows compatibility by using path.join
     return path.join(os.tmpdir(), fileName).replace(/\\/g, '/');
 }
 
-// Helper function to safely delete a file with retries
 async function safeDeleteFile(filePath, maxRetries = 3) {
     console.log(`Attempting to delete file: ${filePath}`);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-            // Check if file exists before attempting deletion
             try {
                 await fs.access(filePath);
                 console.log(`File exists, proceeding with deletion: ${filePath}`);
@@ -32,7 +28,6 @@ async function safeDeleteFile(filePath, maxRetries = 3) {
                 return;
             }
 
-            // Attempt to delete the file
             await fs.unlink(filePath);
             console.log(`Successfully deleted file: ${filePath}`);
             return;
@@ -57,11 +52,9 @@ async function processChunk(chunk, index) {
     let tempFile = null;
 
     try {
-        // Generate temp file path using the createTempFilePath function
         tempFile = await createTempFilePath();
         console.log(`Created temp file for chunk ${index}: ${tempFile}`);
 
-        // Write the chunk data
         try {
             await fs.writeFile(tempFile, JSON.stringify({ candleData: chunk }));
             console.log(`Successfully wrote data to temp file: ${tempFile}`);
@@ -70,7 +63,6 @@ async function processChunk(chunk, index) {
         }
 
         const result = await new Promise((resolve, reject) => {
-            // Ensure the Python script path is properly resolved
             const scriptPath = path.join(__dirname, 'btc_strategy.py').replace(/\\/g, '/');
             console.log(`Executing Python script: ${scriptPath} with temp file: ${tempFile}`);
 
@@ -107,7 +99,6 @@ async function processChunk(chunk, index) {
                 reject(new Error(`Failed to spawn Python process: ${error.message}`));
             });
 
-            // Add timeout to prevent hanging
             setTimeout(() => {
                 pythonProcess.kill();
                 reject(new Error('Python process timed out'));
@@ -119,7 +110,6 @@ async function processChunk(chunk, index) {
         console.error(`Error processing chunk ${index}:`, error);
         throw error;
     } finally {
-        // Delete the temp file using the correct path
         if (tempFile) {
             try {
                 await safeDeleteFile(tempFile);
@@ -143,7 +133,6 @@ router.post('/:strategyId/analyze', async (req, res) => {
             });
         }
 
-        // Split data into chunks
         const chunks = [];
         for (let i = 0; i < candleData.length; i += chunkSize) {
             chunks.push(candleData.slice(i, i + chunkSize));
@@ -153,7 +142,6 @@ router.post('/:strategyId/analyze', async (req, res) => {
         let allSignals = [];
         let errors = [];
 
-        // Process chunks sequentially
         for (let i = 0; i < chunks.length; i++) {
             try {
                 console.log(`Processing chunk ${i + 1}/${chunks.length}`);
@@ -168,11 +156,9 @@ router.post('/:strategyId/analyze', async (req, res) => {
                     chunk: i,
                     error: error.message
                 });
-                // Continue with next chunk even if current one fails
             }
         }
 
-        // Sort signals by timestamp
         allSignals.sort((a, b) => a.timestamp - b.timestamp);
         console.log(`Analysis complete. Total signals: ${allSignals.length}`);
 
@@ -192,6 +178,19 @@ router.post('/:strategyId/analyze', async (req, res) => {
             success: false,
             error: error.message
         });
+    }
+});
+
+router.post('/analyze', async (req, res) => {
+    // Use a dummy strategyId since it's not used in the handler
+    req.params.strategyId = req.params.strategyId || 'dynamic';
+    // Call the main handler
+    const mainHandler = router.stack.find(layer => layer.route && layer.route.path === '/:strategyId/analyze' && layer.route.methods.post);
+    if (mainHandler) {
+        // Express layer handle expects (req, res, next), but we can call with (req, res)
+        return mainHandler.handle(req, res);
+    } else {
+        return res.status(500).json({ success: false, error: 'Analyze handler not found' });
     }
 });
 

@@ -2,14 +2,6 @@ const express = require('express');
 const router = express.Router();
 const ScalpingStrategy = require('./Scalping_Strategy');
 
-/**
- * ScalpingStrategyHandler - Integration layer between the React Native app and the strategy logic
- * 
- * This handler:
- * 1. Provides a clean interface for the React Native app to execute the scalping strategy
- * 2. Formats and validates data from the app
- * 3. Orchestrates strategy execution and processes results
- */
 class ScalpingStrategyHandler {
     constructor() {
         this.strategy = null;
@@ -17,11 +9,6 @@ class ScalpingStrategyHandler {
         this.strategyConfig = null;
     }
     
-    /**
-     * Initialize the strategy with configuration
-     * @param {Object} config - Strategy configuration
-     * @returns {Object} Status of initialization
-     */
     initialize(config) {
         try {
             this.strategyConfig = config;
@@ -41,11 +28,6 @@ class ScalpingStrategyHandler {
         }
     }
     
-    /**
-     * Analyze candle data using the initialized strategy
-     * @param {Array} candleData - Array of candle data objects
-     * @returns {Object} Analysis results with signals
-     */
     analyze(candleData) {
         if (!this.isInitialized || !this.strategy) {
             return {
@@ -55,7 +37,6 @@ class ScalpingStrategyHandler {
         }
         
         try {
-            // Validate candle data
             if (!this._validateCandleData(candleData)) {
                 return {
                     success: false,
@@ -63,7 +44,6 @@ class ScalpingStrategyHandler {
                 };
             }
             
-            // Execute strategy analysis
             const result = this.strategy.analyze(candleData);
             
             return result;
@@ -76,18 +56,11 @@ class ScalpingStrategyHandler {
         }
     }
     
-    /**
-     * Validate candle data format
-     * @param {Array} candleData - Array of candle data objects
-     * @returns {boolean} Is data valid
-     * @private
-     */
     _validateCandleData(candleData) {
         if (!Array.isArray(candleData) || candleData.length === 0) {
             return false;
         }
         
-        // Check for required fields in first candle
         const requiredFields = ['timestamp', 'open', 'high', 'low', 'close', 'volume'];
         return requiredFields.every(field => typeof candleData[0][field] !== 'undefined');
     }
@@ -177,6 +150,10 @@ class ScalpingStrategyHandler {
      * @private
      */
     _simulateBacktest(candleData, signals, config) {
+        // Reset trade state at start of backtest
+        if (this.strategy && this.strategy.resetActiveTradeState) {
+            this.strategy.resetActiveTradeState();
+        }
         // Default configuration
         const backtestConfig = {
             initialCapital: config?.initialCapital || 10000,
@@ -204,8 +181,14 @@ class ScalpingStrategyHandler {
             // Check for signals at this candle
             const signalsAtCandle = signals.filter(s => s.candle_index === i);
             
-            // Open new positions based on signals
+            // Open new positions based on signals (respect single trade mode)
             for (const signal of signalsAtCandle) {
+                // Check if we should honor single trade mode from strategy
+                if (this.strategy && this.strategy.singleTradeMode && openPositions.length > 0) {
+                    console.log(`[BACKTEST] Skipping signal at candle ${i} - single trade mode active, ${openPositions.length} positions open`);
+                    continue; // Skip this signal if single trade mode is enabled and we have open positions
+                }
+                
                 // Calculate position size based on risk percentage
                 const positionSize = (balance * this.strategy.riskPerTrade / 100) / 
                                      (Math.abs(signal.entry_price - signal.sl) / signal.entry_price);
@@ -228,6 +211,13 @@ class ScalpingStrategyHandler {
                 
                 // Deduct fees from balance
                 balance -= entryFee;
+                
+                console.log(`[BACKTEST] Opened ${signal.type} position at candle ${i}: entry=${signal.entry_price}, tp=${signal.tp}, sl=${signal.sl}`);
+                
+                // In single trade mode, only open one position
+                if (this.strategy && this.strategy.singleTradeMode) {
+                    break; // Exit loop after opening one position
+                }
             }
             
             // Check open positions for TP/SL hits
@@ -302,6 +292,8 @@ class ScalpingStrategyHandler {
                         lossCount++;
                         totalLoss += Math.abs(finalPnL);
                     }
+                    
+                    console.log(`[BACKTEST] Closed ${position.type} position at candle ${i}: exit=${exitPrice}, P&L=${finalPnL.toFixed(2)} (${(finalPnL/position.position_size*100).toFixed(2)}%)`);
                 } else {
                     // Update current price for open position
                     position.current_price = candle.close;
@@ -370,20 +362,108 @@ function validateCandleData(candleData) {
     return requiredFields.every(field => typeof candleData[0][field] !== 'undefined');
 }
 
-// Initialize strategy endpoint
-router.post('/initialize', (req, res) => {
+// Store strategy instances by userId_strategyId
+const strategyInstances = {};
+
+// Clear strategy instances endpoint (for debugging/testing)
+router.post('/clear-instances', (req, res) => {
+    console.log(`[SCALPING CLEAR] Clearing all strategy instances. Current instances:`, Object.keys(strategyInstances));
+    Object.keys(strategyInstances).forEach(key => delete strategyInstances[key]);
+    console.log(`[SCALPING CLEAR] All instances cleared`);
+    res.json({ success: true, message: 'All strategy instances cleared' });
+});
+
+// Get current instances endpoint (for debugging)
+router.get('/instances', (req, res) => {
+    const instanceInfo = {};
+    Object.keys(strategyInstances).forEach(key => {
+        const instance = strategyInstances[key];
+        instanceInfo[key] = {
+            isInitialized: instance.isInitialized,
+            configSummary: {
+                rsiEnabled: instance.config.useRSI,
+                macdEnabled: instance.config.useMACD,
+                emaEnabled: instance.config.useEMA,
+                primaryIndicator: instance.config.primarySignalIndicator
+            },
+            tradeStatus: instance.instance && instance.instance.getTradeStatus ? 
+                        instance.instance.getTradeStatus() : null
+        };
+    });
+    res.json({ instances: instanceInfo });
+});
+
+// Get trade status for a specific strategy instance
+router.get('/trade-status/:userId/:strategyId', (req, res) => {
+    const { userId, strategyId } = req.params;
+    const key = `${userId}_${strategyId}`;
+    
+    const strategyObj = strategyInstances[key];
+    if (!strategyObj || !strategyObj.isInitialized) {
+        return res.status(404).json({
+            success: false,
+            message: 'Strategy not found or not initialized'
+        });
+    }
+    
+    const tradeStatus = strategyObj.instance.getTradeStatus();
+    res.json({
+        success: true,
+        tradeStatus: tradeStatus
+    });
+});
+
+// Reset trade state for a specific strategy instance (for debugging/testing)
+router.post('/reset-trade-state/:userId/:strategyId', (req, res) => {
+    const { userId, strategyId } = req.params;
+    const key = `${userId}_${strategyId}`;
+    
+    const strategyObj = strategyInstances[key];
+    if (!strategyObj || !strategyObj.isInitialized) {
+        return res.status(404).json({
+            success: false,
+            message: 'Strategy not found or not initialized'
+        });
+    }
+    
+    strategyObj.instance.resetActiveTradeState();
+    res.json({
+        success: true,
+        message: 'Trade state reset successfully'
+    });
+});
+
+// Initialize strategy for a specific userId and strategyId
+router.post('/initialize/:userId/:strategyId', (req, res) => {
+    const { userId, strategyId } = req.params;
+    const config = req.body;
+    const key = `${userId}_${strategyId}`;
+    
+    // Add detailed logging for debugging
+    console.log(`[SCALPING INIT] Initializing strategy for userId: ${userId}, strategyId: ${strategyId}`);
+    console.log(`[SCALPING INIT] Config received:`, JSON.stringify(config, null, 2));
+    
+    // Force clear any existing instance for this key
+    if (strategyInstances[key]) {
+        console.log(`[SCALPING INIT] Clearing existing instance for key: ${key}`);
+        delete strategyInstances[key];
+    }
+    
     try {
-        const config = req.body;
-        strategyHandler.strategyConfig = config;
-        strategyHandler.strategy = new ScalpingStrategy(config);
-        strategyHandler.isInitialized = true;
+        strategyInstances[key] = {
+            config,
+            instance: new ScalpingStrategy(config),
+            isInitialized: true
+        };
         
+        console.log(`[SCALPING INIT] Successfully initialized strategy ${key}`);
         res.json({
             success: true,
-            message: 'Strategy initialized successfully'
+            message: `Strategy ${strategyId} for user ${userId} initialized successfully`
         });
     } catch (error) {
-        console.error('Failed to initialize strategy:', error);
+        console.error(`[SCALPING INIT] Failed to initialize strategy ${key}:`, error);
+        console.error(`[SCALPING INIT] Error stack:`, error.stack);
         res.status(500).json({
             success: false,
             message: `Failed to initialize strategy: ${error.message}`
@@ -391,34 +471,134 @@ router.post('/initialize', (req, res) => {
     }
 });
 
-// Analyze endpoint
-router.post('/analyze', (req, res) => {
-    if (!strategyHandler.isInitialized || !strategyHandler.strategy) {
-        return res.status(400).json({
-            success: false,
-            message: 'Strategy not initialized. Call initialize() first.'
-        });
+// Main analyze endpoint that handles requests from the dynamic router
+router.post('/analyze/:userId/:strategyId', (req, res) => {
+    const { userId, strategyId } = req.params;
+    const { candleData } = req.body;
+    const key = `${userId}_${strategyId}`;
+    
+    console.log(`[SCALPING ANALYZE] Received analysis request for key: ${key}`);
+    console.log(`[SCALPING ANALYZE] Request body keys:`, Object.keys(req.body));
+    console.log(`[SCALPING ANALYZE] CandleData length:`, candleData?.length || 'undefined');
+    console.log(`[SCALPING ANALYZE] CandleData type:`, typeof candleData);
+    
+    const strategyObj = strategyInstances[key];
+    console.log(`[SCALPING ANALYZE] Strategy instance exists:`, !!strategyObj);
+    console.log(`[SCALPING ANALYZE] Strategy initialized:`, strategyObj?.isInitialized || false);
+    console.log(`[SCALPING ANALYZE] Available instances:`, Object.keys(strategyInstances));
+    
+    if (!strategyObj || !strategyObj.isInitialized) {
+        console.log(`[SCALPING ANALYZE] Strategy not initialized for key: ${key}, attempting auto-initialization`);
+        
+        // Try to auto-initialize the strategy using data from the request
+        if (req.strategy) {
+            try {
+                // Parse the strategy configuration from the database
+                const entryConditions = req.strategy.EntryConditions ? JSON.parse(req.strategy.EntryConditions) : {};
+                const exitConditions = req.strategy.ExitConditions ? JSON.parse(req.strategy.ExitConditions) : {};
+                
+                console.log(`[SCALPING ANALYZE] Raw EntryConditions from DB:`, req.strategy.EntryConditions);
+                console.log(`[SCALPING ANALYZE] Parsed EntryConditions:`, JSON.stringify(entryConditions, null, 2));
+                console.log(`[SCALPING ANALYZE] Raw ExitConditions from DB:`, req.strategy.ExitConditions);
+                console.log(`[SCALPING ANALYZE] Parsed ExitConditions:`, JSON.stringify(exitConditions, null, 2));
+                
+                // Create configuration object from strategy data
+                const autoConfig = {
+                    strategyName: req.strategy.StrategyName,
+                    strategyDescription: req.strategy.Description || '',
+                    timeframe: req.strategy.TimeFrame || '1m',
+                    riskPerTrade: req.strategy.RiskPercentage || 1,
+                    profitTarget: (req.strategy.TakeProfit || 0.005) * 100, // Convert back to percentage
+                    stopLoss: (req.strategy.StopLoss || 0.003) * 100, // Convert back to percentage
+                    
+                    // Technical indicators from entry conditions
+                    ...entryConditions,
+                    
+                    // Risk management from exit conditions  
+                    ...exitConditions
+                };
+                
+                console.log(`[SCALPING ANALYZE] Auto-initializing strategy with config:`, JSON.stringify(autoConfig, null, 2));
+                
+                // Initialize the strategy
+                strategyInstances[key] = {
+                    config: autoConfig,
+                    instance: new ScalpingStrategy(autoConfig),
+                    isInitialized: true
+                };
+                
+                console.log(`[SCALPING ANALYZE] Successfully auto-initialized strategy ${key}`);
+            } catch (initError) {
+                console.error(`[SCALPING ANALYZE] Failed to auto-initialize strategy ${key}:`, initError);
+                return res.status(400).json({
+                    success: false,
+                    message: `Strategy not initialized and auto-initialization failed: ${initError.message}`
+                });
+            }
+        } else {
+            console.error(`[SCALPING ANALYZE] Strategy not initialized for key: ${key} and no strategy data available for auto-init`);
+            return res.status(400).json({
+                success: false,
+                message: 'Strategy not initialized. Call initialize first for this user and strategy.'
+            });
+        }
     }
     
     try {
-        const { candleData } = req.body;
-        
-        if (!validateCandleData(candleData)) {
+        if (!Array.isArray(candleData) || candleData.length === 0) {
+            console.error(`[SCALPING ANALYZE] Invalid candle data:`, {
+                isArray: Array.isArray(candleData),
+                length: candleData?.length,
+                type: typeof candleData
+            });
             return res.status(400).json({
                 success: false,
                 message: 'Invalid candle data format'
             });
         }
         
-        const result = strategyHandler.strategy.analyze(candleData);
+        console.log(`[SCALPING ANALYZE] Analyzing ${candleData.length} candles`);
+        console.log(`[SCALPING ANALYZE] First candle sample:`, candleData[0]);
+        
+        // Get the strategy object (either existing or newly auto-initialized)
+        const finalStrategyObj = strategyInstances[key];
+        const result = finalStrategyObj.instance.analyze(candleData);
+        
+        console.log(`[SCALPING ANALYZE] Analysis result:`, {
+            success: result.success,
+            signalsCount: result.signals?.length || 0,
+            message: result.message
+        });
+        
         res.json(result);
     } catch (error) {
-        console.error('Error during strategy analysis:', error);
+        console.error('[SCALPING ANALYZE] Error during strategy analysis:', error);
+        console.error('[SCALPING ANALYZE] Error stack:', error.stack);
         res.status(500).json({
             success: false,
             message: `Analysis error: ${error.message}`
         });
     }
+});
+
+// Legacy analyze endpoint for backward compatibility
+router.post('/analyze', (req, res) => {
+    console.log(`[SCALPING ANALYZE] Legacy analyze endpoint called, redirecting to dynamic endpoint`);
+    // Extract strategy info from request if available, or use default values
+    const userId = req.strategy?.UserId || 'default';
+    const strategyId = req.strategy?.StrategyId || 'default';
+    
+    // Redirect to the specific endpoint
+    req.params.userId = userId;
+    req.params.strategyId = strategyId;
+    req.url = `/analyze/${userId}/${strategyId}`;
+    
+    // Call the main handler
+    return router.stack.find(layer => 
+        layer.route && 
+        layer.route.path === '/analyze/:userId/:strategyId' && 
+        layer.route.methods.post
+    ).handle(req, res);
 });
 
 // Get configuration endpoint
@@ -456,7 +636,7 @@ router.post('/backtest', (req, res) => {
         }
         
         const signals = analysisResult.signals;
-        const results = strategyHandler.strategy._simulateBacktest(historicalData, signals, backtestConfig);
+        const results = strategyHandler._simulateBacktest(historicalData, signals, backtestConfig);
         
         res.json({
             success: true,
