@@ -10,6 +10,7 @@ const bcrypt = require('bcrypt');
 const { Resend } = require('resend');
 const btcStrategyRouter = require('./strategies/BTC_Strategy');
 const scalpingStrategyRouter = require('./strategies/ScalpingStrategyHandler');
+const axios = require('axios');
 
 const app = express();
 
@@ -2089,6 +2090,31 @@ app.get('/api/test/hash/:password', async (req, res) => {
     } catch (err) {
         console.error('Error generating hash:', err);
         res.status(500).json({ success: false, message: 'Error generating hash' });
+    }
+});
+
+// MEXC API Proxy endpoint to handle CORS issues
+app.get('/api/mexc/kline/:symbol', async (req, res) => {
+    try {
+        const { symbol } = req.params;
+        const { interval, start, end } = req.query;
+        
+        console.log(`[MEXC PROXY] Fetching kline data for ${symbol} with interval ${interval}`);
+        
+        const mexcUrl = `https://contract.mexc.com/api/v1/contract/kline/${symbol}`;
+        const response = await axios.get(mexcUrl, {
+            params: { interval, start, end },
+            timeout: 10000
+        });
+        
+        res.json(response.data);
+    } catch (error) {
+        console.error('[MEXC PROXY] Error fetching data:', error.message);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Failed to fetch market data',
+            error: error.message 
+        });
     }
 });
 
