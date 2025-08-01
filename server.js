@@ -3,7 +3,21 @@ const express = require('express');
 const sql = require('mssql');
 const cors = require('cors');
 const config = require('./config');
-const { EMAIL_URLS, EMAIL_CONFIG } = require('../config/apiConfig');
+// Email configuration for backend
+const EMAIL_CONFIG = {
+    FROM_ADDRESS: 'ProfitCraft <onboarding@resend.dev>',
+    COMPANY_NAME: 'ProfitCraft',
+    SUPPORT_EMAIL: 'onboarding@resend.dev'
+};
+
+// Email URLs for backend templates
+const API_BASE_URL = 'https://profitcraft-backend-v2-bmb6fbg3bae5dje5.northeurope-01.azurewebsites.net';
+const EMAIL_URLS = {
+    VERIFY_EMAIL: (token) => `${API_BASE_URL}/api/verify-email?token=${token}`,
+    RESET_PASSWORD: (token) => `${API_BASE_URL}/reset-password?token=${token}`,
+    VERIFICATION_SUCCESS: `${API_BASE_URL}/verification-success`,
+    APP_URL: API_BASE_URL
+};
 const strategyRoutes = require('./strategies/BTC_Strategy');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
