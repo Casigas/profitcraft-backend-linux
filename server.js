@@ -2146,6 +2146,45 @@ app.get('/api/mexc/kline/:symbol', async (req, res) => {
     }
 });
 
+// Admin authentication endpoint for web protection
+app.post('/api/admin-login', async (req, res) => {
+    try {
+        const { password } = req.body;
+        
+        // Store your admin password in environment variable for security
+        const ADMIN_PASSWORD = process.env.ADMIN_WEB_PASSWORD || 'admin123'; // Change this!
+        
+        if (!password) {
+            return res.status(400).json({
+                success: false,
+                message: 'Password is required'
+            });
+        }
+        
+        if (password === ADMIN_PASSWORD) {
+            // Generate a simple session token
+            const sessionToken = crypto.randomBytes(32).toString('hex');
+            
+            return res.json({
+                success: true,
+                message: 'Authentication successful',
+                token: sessionToken
+            });
+        } else {
+            return res.status(401).json({
+                success: false,
+                message: 'Invalid password'
+            });
+        }
+    } catch (error) {
+        console.error('Admin login error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Server error'
+        });
+    }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log('\n🚀 =================================');
